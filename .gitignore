@@ -1,1 +1,4 @@
 corpus/
+.vscode/
+env/
+__pycache__/
