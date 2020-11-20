@@ -1,4 +1,5 @@
-corpus/
+bible-corpus/
+bible-corpus-tools/
 .vscode/
 env/
 __pycache__/
