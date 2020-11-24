@@ -9,7 +9,7 @@ Original file is located at
 We will train an attention seq2seq for translating from Nahuatl to Spanish, using the Pytorch tutorial: https://pytorch.org/tutorials/intermediate/seq2seq_translation_tutorial.html
 """
 
-!pip install fasttext
+# !pip install fasttext
 
 from __future__ import unicode_literals, print_function, division
 import time
@@ -33,17 +33,17 @@ plt.switch_backend('agg')
 import matplotlib.ticker as ticker
 import numpy as np
 
-import fasttext
-import fasttext.util
-# from gensim.models.fasttext import FastTextKeyedVectors
+# import fasttext
+# import fasttext.util
+# # from gensim.models.fasttext import FastTextKeyedVectors
 
-fasttext.util.download_model('nah', if_exists='ignore')
-nh_ft = fasttext.load_model('cc.nah.300.bin')
-nh_ft.get_dimension()
-nh_ft.get_nearest_neighbors('coatl')
+# fasttext.util.download_model('nah', if_exists='ignore')
+# nh_ft = fasttext.load_model('cc.nah.300.bin')
+# nh_ft.get_dimension()
+# nh_ft.get_nearest_neighbors('coatl')
 
-nah_vectors = torch.from_numpy(nh_ft.get_input_matrix())
-print(nah_vectors.size())
+# nah_vectors = torch.from_numpy(nh_ft.get_input_matrix())
+# print(nah_vectors.size())
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -152,7 +152,7 @@ def prepareData(lang1, lang2, corpus,reverse=False):
     print(output_lang.name, output_lang.n_words)
     return input_lang, output_lang, pairs
 
-training,validation,test = split_corpus("parallel_nh-es.csv")
+training,validation,test = split_corpus("../corpus/parallel_nh-es.csv")
 input_lang, output_lang, pairs = prepareData('nh', 'es',training, True)
 print(random.choice(pairs))
 
@@ -464,17 +464,18 @@ attn_decoder1 = AttnDecoderRNN(
     hidden_size, output_lang.n_words, dropout_p=0.1).to(device)
 
 # TO speed up training, you can reduce 75000 to 5000
-trainIters(encoder1, decoder1, 5000, print_every=5000)
+# trainIters(encoder1, decoder1, 5000, print_every=5000)
 trainIters(encoder2, attn_decoder1, 5000, print_every=5000,attn=True)
 
 _,_,val_pairs = prepareData('nh', 'es',validation, True)
 _,_,test_pairs = prepareData('nh', 'es',test, True)
 
 # evaluateRandomly(encoder1, attn_decoder1,val_pairs)
-evaluate_bleu(encoder1, decoder1,val_pairs,n=len(val_pairs))
+# evaluate_bleu(encoder1, decoder1,val_pairs,n=len(val_pairs))
 evaluate_bleu(encoder2,attn_decoder1,val_pairs,n=len(val_pairs))
-evaluate_bleu(encoder1,attn_decoder1,val_pairs,n=len(val_pairs))
-evaluate_bleu(encoder2,decoder1,val_pairs,n=len(val_pairs))
+
+# evaluate_bleu(encoder1,attn_decoder1,val_pairs,n=len(val_pairs))
+# evaluate_bleu(encoder2,decoder1,val_pairs,n=len(val_pairs))
 
 def save_translator(encoder,decoder,path1="encoder",path2="decoder"):
   torch.save(encoder,path1)
@@ -488,4 +489,4 @@ def evaluate_saved(encoder_path,decoder_path,pairs):
 
 # save_translator(encoder1,attn_decoder1)
 # save_translator(encoder1,attn_decoder1,path1="/content/drive/MyDrive/NLP_project/encoder1",path2="/content/drive/MyDrive/NLP_project/decoder1")
-evaluate_saved("encoder","decoder",val_pairs)
+# evaluate_saved("encoder","decoder",val_pairs)
