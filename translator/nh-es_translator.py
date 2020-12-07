@@ -12,6 +12,10 @@ We will train an attention seq2seq for translating from Nahuatl to Spanish, usin
 # !pip install fasttext
 
 from __future__ import unicode_literals, print_function, division
+import fasttext.util
+import fasttext
+import numpy as np
+import matplotlib.ticker as ticker
 import time
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
 import math
@@ -29,13 +33,9 @@ import torch.nn.functional as F
 import pandas as pd
 
 import matplotlib.pyplot as plt
-plt.switch_backend('agg')
-import matplotlib.ticker as ticker
-import numpy as np
+plt.switch_backend('TkAgg')
 
-# import fasttext
-# import fasttext.util
-# # from gensim.models.fasttext import FastTextKeyedVectors
+# from gensim.models.fasttext import FastTextKeyedVectors
 
 # fasttext.util.download_model('nah', if_exists='ignore')
 # nh_ft = fasttext.load_model('cc.nah.300.bin')
@@ -49,13 +49,16 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 SOS_token = 0
 EOS_token = 1
+
+
 class Lang:
-    def __init__(self, name):
+    def __init__(self, name, embedding=None):
         self.name = name
         self.word2index = {}
         self.word2count = {}
         self.index2word = {0: "SOS", 1: "EOS"}
         self.n_words = 2  # Count SOS and EOS
+        self.embedding = embedding
 
     def addSentence(self, sentence):
         for word in sentence.split(' '):
@@ -89,13 +92,15 @@ def normalizeString(s):
     s = re.sub(r"[^a-zA-Z.!?]+", r" ", s)
     return s
 
-def split_corpus(path):
-  #Split method thanks to https://datascience.stackexchange.com/questions/15135/train-test-validation-set-splitting-in-sklearn
-  #returns a 60% - 20% -20% training-validation-test split
-  df = pd.read_csv(path, delimiter="|")
-  return np.split(df.sample(frac=1), [int(.6*len(df)), int(.8*len(df))])
 
-def readLangs(lang1, lang2,corpus, reverse=False):
+def split_corpus(path):
+    # Split method thanks to https://datascience.stackexchange.com/questions/15135/train-test-validation-set-splitting-in-sklearn
+    # returns a 60% - 20% -20% training-validation-test split
+    df = pd.read_csv(path, delimiter="|")
+    return np.split(df.sample(frac=1), [int(.6*len(df)), int(.8*len(df))])
+
+
+def readLangs(lang1, lang2, corpus, reverse=False):
     print("Reading lines...")
 
     # lang_df = pd.read_csv("parallel_nh-es.csv", delimiter="|")
@@ -115,8 +120,9 @@ def readLangs(lang1, lang2,corpus, reverse=False):
 
     return input_lang, output_lang, pairs
 
+
 # May be incresed to get more samples
-MAX_LENGTH = 20
+MAX_LENGTH = 15
 
 eng_prefixes = (
     "i am ", "i m ",
@@ -138,8 +144,8 @@ def filterPairs(pairs):
     return [pair for pair in pairs if filterPair(pair)]
 
 
-def prepareData(lang1, lang2, corpus,reverse=False):
-    input_lang, output_lang, pairs = readLangs(lang1, lang2,corpus,reverse)
+def prepareData(lang1, lang2, corpus, reverse=False):
+    input_lang, output_lang, pairs = readLangs(lang1, lang2, corpus, reverse)
     print("Read %s sentence pairs" % len(pairs))
     pairs = filterPairs(pairs)
     print("Trimmed to %s sentence pairs" % len(pairs))
@@ -152,15 +158,16 @@ def prepareData(lang1, lang2, corpus,reverse=False):
     print(output_lang.name, output_lang.n_words)
     return input_lang, output_lang, pairs
 
-training,validation,test = split_corpus("../corpus/parallel_nh-es.csv")
-input_lang, output_lang, pairs = prepareData('nh', 'es',training, True)
+
+training, validation, test = split_corpus("../corpus/parallel_nh-es.csv")
+input_lang, output_lang, pairs = prepareData('nh', 'es', training)
 print(random.choice(pairs))
 
 """Set up the encoder and decoder RNN models!"""
 
 
 class EncoderRNN(nn.Module):
-    def __init__(self, input_size, hidden_size,word_embeds=None):
+    def __init__(self, input_size, hidden_size, word_embeds=None):
         super(EncoderRNN, self).__init__()
         self.hidden_size = hidden_size
 
@@ -178,6 +185,7 @@ class EncoderRNN(nn.Module):
 
     def initHidden(self):
         return torch.zeros(1, 1, self.hidden_size, device=device)
+
 
 class DecoderRNN(nn.Module):
     def __init__(self, hidden_size, output_size):
@@ -198,6 +206,7 @@ class DecoderRNN(nn.Module):
 
     def initHidden(self):
         return torch.zeros(1, 1, self.hidden_size, device=device)
+
 
 class AttnDecoderRNN(nn.Module):
     def __init__(self, hidden_size, output_size, dropout_p=0.1, max_length=MAX_LENGTH):
@@ -235,6 +244,7 @@ class AttnDecoderRNN(nn.Module):
     def initHidden(self):
         return torch.zeros(1, 1, self.hidden_size, device=device)
 
+
 """Prepare the training data."""
 
 
@@ -253,136 +263,6 @@ def tensorsFromPair(pair):
     target_tensor = tensorFromSentence(output_lang, pair[1])
     return (input_tensor, target_tensor)
 
-"""
-Model training code
-"""
-
-teacher_forcing_ratio = 0.5
-
-
-def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length=MAX_LENGTH,uses_attn=False):
-    encoder_hidden = encoder.initHidden()
-    # print("uses attn", uses_attn)
-    encoder_optimizer.zero_grad()
-    decoder_optimizer.zero_grad()
-
-    input_length = input_tensor.size(0)
-    target_length = target_tensor.size(0)
-
-    encoder_outputs = torch.zeros(
-        max_length, encoder.hidden_size, device=device)
-
-    loss = 0
-
-    for ei in range(input_length):
-        encoder_output, encoder_hidden = encoder(
-            input_tensor[ei], encoder_hidden)
-        encoder_outputs[ei] = encoder_output[0, 0]
-
-    decoder_input = torch.tensor([[SOS_token]], device=device)
-
-    decoder_hidden = encoder_hidden
-
-    use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
-
-    if use_teacher_forcing:
-        # Teacher forcing: Feed the target as the next input
-        for di in range(target_length):
-            if uses_attn:
-              decoder_output, decoder_hidden, decoder_attention = decoder(
-                  decoder_input, decoder_hidden, encoder_outputs)
-              loss += criterion(decoder_output, target_tensor[di])
-              decoder_input = target_tensor[di]  # Teacher forcing
-            # TODO: remove encoder_outputs parameter if not using attention
-            # TODO: remove decoder_attention from output if not using attention
-            else:
-              decoder_output, decoder_hidden = decoder(
-                  decoder_input, decoder_hidden)
-              loss += criterion(decoder_output, target_tensor[di])
-              decoder_input = target_tensor[di]  # Teacher forcing
-
-    else:
-        # Without teacher forcing: use its own predictions as the next input
-        for di in range(target_length):
-            if uses_attn:
-              decoder_output, decoder_hidden, decoder_attention = decoder(
-                  decoder_input, decoder_hidden, encoder_outputs)
-              topv, topi = decoder_output.topk(1)
-              decoder_input = topi.squeeze().detach()  # detach from history as input
-            # TODO: remove encoder_outputs parameter if not using attention
-            # TODO: remove decoder_attention from output if not using attention
-            else:
-              decoder_output, decoder_hidden = decoder(
-                  decoder_input, decoder_hidden)
-              topv, topi = decoder_output.topk(1)
-              decoder_input = topi.squeeze().detach()  # detach from history as input
-
-            loss += criterion(decoder_output, target_tensor[di])
-            if decoder_input.item() == EOS_token:
-                break
-
-    loss.backward()
-
-    encoder_optimizer.step()
-    decoder_optimizer.step()
-
-    return loss.item() / target_length
-
-def asMinutes(s):
-    m = math.floor(s / 60)
-    s -= m * 60
-    return '%dm %ds' % (m, s)
-
-
-def timeSince(since, percent):
-    now = time.time()
-    s = now - since
-    es = s / (percent)
-    rs = es - s
-    return '%s (- %s)' % (asMinutes(s), asMinutes(rs))
-
-def showPlot(points):
-    plt.figure()
-    fig, ax = plt.subplots()
-    # this locator puts ticks at regular intervals
-    loc = ticker.MultipleLocator(base=0.2)
-    ax.yaxis.set_major_locator(loc)
-    plt.plot(points)
-
-def trainIters(encoder, decoder, n_iters, print_every=1000, plot_every=100, learning_rate=0.01,attn=False):
-    start = time.time()
-    plot_losses = []
-    print_loss_total = 0  # Reset every print_every
-    plot_loss_total = 0  # Reset every plot_every
-
-    encoder_optimizer = optim.SGD(encoder.parameters(), lr=learning_rate)
-    decoder_optimizer = optim.SGD(decoder.parameters(), lr=learning_rate)
-    training_pairs = [tensorsFromPair(random.choice(pairs))
-                      for i in range(n_iters)]
-    criterion = nn.NLLLoss()
-
-    for iter in range(1, n_iters + 1):
-        training_pair = training_pairs[iter - 1]
-        input_tensor = training_pair[0]
-        target_tensor = training_pair[1]
-
-        loss = train(input_tensor, target_tensor, encoder,
-                     decoder, encoder_optimizer, decoder_optimizer, criterion,uses_attn=attn)
-        print_loss_total += loss
-        plot_loss_total += loss
-
-        if iter % print_every == 0:
-            print_loss_avg = print_loss_total / print_every
-            print_loss_total = 0
-            print('%s (%d %d%%) %.4f' % (timeSince(start, iter / n_iters),
-                                         iter, iter / n_iters * 100, print_loss_avg))
-
-        if iter % plot_every == 0:
-            plot_loss_avg = plot_loss_total / plot_every
-            plot_losses.append(plot_loss_avg)
-            plot_loss_total = 0
-
-    showPlot(plot_losses)
 
 """
 Evaluation"""
@@ -411,12 +291,12 @@ def evaluate(encoder, decoder, sentence, max_length=MAX_LENGTH):
 
         for di in range(max_length):
             try:
-              decoder_output, decoder_hidden, decoder_attention = decoder(
-                  decoder_input, decoder_hidden, encoder_outputs)
-              decoder_attentions[di] = decoder_attention.data
+                decoder_output, decoder_hidden, decoder_attention = decoder(
+                    decoder_input, decoder_hidden, encoder_outputs)
+                decoder_attentions[di] = decoder_attention.data
             except:
-              decoder_output, decoder_hidden = decoder(
-                  decoder_input, decoder_hidden)
+                decoder_output, decoder_hidden = decoder(
+                    decoder_input, decoder_hidden)
             topv, topi = decoder_output.data.topk(1)
             if topi.item() == EOS_token:
                 decoded_words.append('<EOS>')
@@ -428,7 +308,8 @@ def evaluate(encoder, decoder, sentence, max_length=MAX_LENGTH):
 
         return decoded_words, decoder_attentions[:di + 1]
 
-def evaluateRandomly(encoder, decoder,pairs, n=1):
+
+def evaluateRandomly(encoder, decoder, pairs, n=1):
     for i in range(n):
         pair = random.choice(pairs)
         print('>', pair[0])
@@ -441,7 +322,8 @@ def evaluateRandomly(encoder, decoder,pairs, n=1):
 
 """Calculating the BLEU score on a subset of the test data"""
 
-def evaluate_bleu(encoder, decoder,pairs, n=10):
+
+def evaluate_bleu(encoder, decoder, pairs, n=10):
     """To speed up testing, we only evaluate BLEU score on n test sentences."""
     references = []
     predictions = []
@@ -449,43 +331,197 @@ def evaluate_bleu(encoder, decoder,pairs, n=10):
         references.append(pair[1])
         output_words, _ = evaluate(encoder, decoder, pair[0])
         predictions.append(output_words)
-    #smoothing function reference here: https://www.nltk.org/_modules/nltk/translate/bleu_score.html
-    score = corpus_bleu(references, predictions,smoothing_function=SmoothingFunction().method3)
+    # smoothing function reference here: https://www.nltk.org/_modules/nltk/translate/bleu_score.html
+    score = corpus_bleu(references, predictions,
+                        smoothing_function=SmoothingFunction().method3)
     print('BLEU score:', score)
+    return score
+
+
+_, _, val_pairs = prepareData('nh', 'es', validation, True)
+
+
+"""
+Model training code
+"""
+
+teacher_forcing_ratio = 0.5
+
+
+def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length=MAX_LENGTH, uses_attn=False):
+    encoder_hidden = encoder.initHidden()
+    # print("uses attn", uses_attn)
+    encoder_optimizer.zero_grad()
+    decoder_optimizer.zero_grad()
+
+    input_length = input_tensor.size(0)
+    target_length = target_tensor.size(0)
+
+    encoder_outputs = torch.zeros(
+        max_length, encoder.hidden_size, device=device)
+
+    loss = 0
+
+    for ei in range(input_length):
+        encoder_output, encoder_hidden = encoder(
+            input_tensor[ei], encoder_hidden)
+        encoder_outputs[ei] = encoder_output[0, 0]
+
+    decoder_input = torch.tensor([[SOS_token]], device=device)
+
+    decoder_hidden = encoder_hidden
+
+    use_teacher_forcing = True if random.random() < teacher_forcing_ratio else False
+
+    if use_teacher_forcing:
+        # Teacher forcing: Feed the target as the next input
+        for di in range(target_length):
+            if uses_attn:
+                decoder_output, decoder_hidden, decoder_attention = decoder(
+                    decoder_input, decoder_hidden, encoder_outputs)
+                loss += criterion(decoder_output, target_tensor[di])
+                decoder_input = target_tensor[di]  # Teacher forcing
+            # TODO: remove encoder_outputs parameter if not using attention
+            # TODO: remove decoder_attention from output if not using attention
+            else:
+                decoder_output, decoder_hidden = decoder(
+                    decoder_input, decoder_hidden)
+                loss += criterion(decoder_output, target_tensor[di])
+                decoder_input = target_tensor[di]  # Teacher forcing
+
+    else:
+        # Without teacher forcing: use its own predictions as the next input
+        for di in range(target_length):
+            if uses_attn:
+                decoder_output, decoder_hidden, decoder_attention = decoder(
+                    decoder_input, decoder_hidden, encoder_outputs)
+                topv, topi = decoder_output.topk(1)
+                decoder_input = topi.squeeze().detach()  # detach from history as input
+            # TODO: remove encoder_outputs parameter if not using attention
+            # TODO: remove decoder_attention from output if not using attention
+            else:
+                decoder_output, decoder_hidden = decoder(
+                    decoder_input, decoder_hidden)
+                topv, topi = decoder_output.topk(1)
+                decoder_input = topi.squeeze().detach()  # detach from history as input
+
+            loss += criterion(decoder_output, target_tensor[di])
+            if decoder_input.item() == EOS_token:
+                break
+
+    loss.backward()
+
+    encoder_optimizer.step()
+    decoder_optimizer.step()
+
+    return loss.item() / target_length
+
+
+def asMinutes(s):
+    m = math.floor(s / 60)
+    s -= m * 60
+    return '%dm %ds' % (m, s)
+
+
+def timeSince(since, percent):
+    now = time.time()
+    s = now - since
+    es = s / (percent)
+    rs = es - s
+    return '%s (- %s)' % (asMinutes(s), asMinutes(rs))
+
+
+def showPlot(points):
+    plt.figure()
+    fig, ax = plt.subplots()
+    # this locator puts ticks at regular intervals
+    loc = ticker.MultipleLocator(base=0.2)
+    ax.yaxis.set_major_locator(loc)
+    plt.plot(points)
+    plt.show()
+
+
+def trainIters(encoder, decoder, n_iters, print_every=1000, plot_every=1000, learning_rate=0.01, attn=False):
+    start = time.time()
+    plot_losses = []
+    bleu_plot = []
+
+    print_loss_total = 0  # Reset every print_every
+    plot_loss_total = 0  # Reset every plot_every
+
+    encoder_optimizer = optim.SGD(encoder.parameters(), lr=learning_rate)
+    decoder_optimizer = optim.SGD(decoder.parameters(), lr=learning_rate)
+    training_pairs = [tensorsFromPair(random.choice(pairs))
+                      for i in range(n_iters)]
+    criterion = nn.NLLLoss()
+
+    for iter in range(1, n_iters + 1):
+        training_pair = training_pairs[iter - 1]
+        input_tensor = training_pair[0]
+        target_tensor = training_pair[1]
+
+        loss = train(input_tensor, target_tensor, encoder,
+                     decoder, encoder_optimizer, decoder_optimizer, criterion, uses_attn=attn)
+        print_loss_total += loss
+        plot_loss_total += loss
+
+        if iter % print_every == 0:
+            print_loss_avg = print_loss_total / print_every
+            print_loss_total = 0
+            print('%s (%d %d%%) %.4f' % (timeSince(start, iter / n_iters),
+                                         iter, iter / n_iters * 100, print_loss_avg))
+
+            evaluateRandomly(encoder, decoder, val_pairs)
+            bleu_plot.append(evaluate_bleu(encoder, decoder, val_pairs))
+
+        if iter % plot_every == 0:
+            plot_loss_avg = plot_loss_total / plot_every
+            plot_losses.append(plot_loss_avg)
+            plot_loss_total = 0
+
+    # showPlot(plot_losses)
+    showPlot(bleu_plot)
+    print("Best Bleu Score:", max(bleu_plot))
+
 
 """Finally, we can actually run and test the model (without attention)!"""
 # TODO test this once everything else works
 hidden_size = 300
-encoder1 = EncoderRNN(input_lang.n_words, hidden_size).to(device)
-encoder2 = EncoderRNN(input_lang.n_words, hidden_size).to(device)
+encoder1 = EncoderRNN(input_lang.n_words, hidden_size,
+                      word_embeds=input_lang.embedding).to(device)
+encoder2 = EncoderRNN(input_lang.n_words, hidden_size,
+                      word_embeds=input_lang.embedding).to(device)
 # TODO: try DecoderRNN without attention (remove dropout_p parameter)
-decoder1 = DecoderRNN(hidden_size,output_lang.n_words).to(device)
+decoder1 = DecoderRNN(hidden_size, output_lang.n_words).to(device)
 attn_decoder1 = AttnDecoderRNN(
     hidden_size, output_lang.n_words, dropout_p=0.1).to(device)
 
 # TO speed up training, you can reduce 75000 to 5000
-# trainIters(encoder1, decoder1, 5000, print_every=5000)
-trainIters(encoder2, attn_decoder1, 5000, print_every=5000,attn=True)
+# trainIters(encoder1, decoder1, 50, print_every=5000)
+trainIters(encoder2, attn_decoder1, 1000, learning_rate=0.01,
+           print_every=50, plot_every=100, attn=True)
 
-_,_,val_pairs = prepareData('nh', 'es',validation, True)
-_,_,test_pairs = prepareData('nh', 'es',test, True)
+_, _, test_pairs = prepareData('nh', 'es', test, True)
 
-# evaluateRandomly(encoder1, attn_decoder1,val_pairs)
-# evaluate_bleu(encoder1, decoder1,val_pairs,n=len(val_pairs))
-evaluate_bleu(encoder2,attn_decoder1,val_pairs,n=len(val_pairs))
+evaluateRandomly(encoder2, attn_decoder1, test_pairs)
+# evaluate_bleu(encoder1, decoder1, val_pairs, n=len(val_pairs))
+evaluate_bleu(encoder2, attn_decoder1, test_pairs, n=len(test_pairs))
 
 # evaluate_bleu(encoder1,attn_decoder1,val_pairs,n=len(val_pairs))
 # evaluate_bleu(encoder2,decoder1,val_pairs,n=len(val_pairs))
 
-def save_translator(encoder,decoder,path1="encoder",path2="decoder"):
-  torch.save(encoder,path1)
-  torch.save(decoder,path2)
 
-def load_translator(encoder_path,decoder_path):
-  return torch.load(encoder_path) , torch.load(decoder_path)
+def save_translator(encoder, decoder, path1="encoder", path2="decoder"):
+    torch.save(encoder, path1)
+    torch.save(decoder, path2)
 
-def evaluate_saved(encoder_path,decoder_path,pairs):
-  evaluate_bleu(*load_translator(encoder_path,decoder_path),pairs)
+
+def load_translator(encoder_path, decoder_path):
+    return torch.load(encoder_path), torch.load(decoder_path)
+
+
+def evaluate_saved(encoder_path, decoder_path, pairs):
+    evaluate_bleu(*load_translator(encoder_path, decoder_path), pairs)
 
 # save_translator(encoder1,attn_decoder1)
 # save_translator(encoder1,attn_decoder1,path1="/content/drive/MyDrive/NLP_project/encoder1",path2="/content/drive/MyDrive/NLP_project/decoder1")
