@@ -24,6 +24,10 @@ Translation:
 Build: 
 
 `python translator.py -b -a -e encoders/myencoder -d decoders/mydecoder -i 5000 -p 100`
+## Error Handling
+The translator requires a powerful machine to build if word embeddings are enabled, to disable word embeddings, edit line 613 (at the time of writing) by setting `word_embeds=False`.
+
+Running the translator will fail if the MAX_LENGTH variable is not set to the dimensions corresponding to the saved encoder and decoder pair. 
 
 ### Disclaimer:
 The corpus parallel_nh-es.csv has been created with Christos Christodoulopulus's bible-corpus, and I do not claim any credit for the contents of this corpus.
