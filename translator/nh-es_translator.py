@@ -24,6 +24,7 @@ import unicodedata
 import string
 import re
 import random
+import sys, getopt
 
 import torch
 import torch.nn as nn
@@ -33,23 +34,20 @@ import torch.nn.functional as F
 import pandas as pd
 
 import matplotlib.pyplot as plt
-plt.switch_backend('TkAgg')
-
-# from gensim.models.fasttext import FastTextKeyedVectors
-
-# fasttext.util.download_model('nah', if_exists='ignore')
-# nh_ft = fasttext.load_model('cc.nah.300.bin')
-# nh_ft.get_dimension()
-# nh_ft.get_nearest_neighbors('coatl')
-
-# nah_vectors = torch.from_numpy(nh_ft.get_input_matrix())
-# print(nah_vectors.size())
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 SOS_token = 0
 EOS_token = 1
 
+def load_word_embeddings(lang):
+    fasttext.util.download_model(lang, if_exists='ignore')
+    ft = fasttext.load_model('cc.'+lang+'.300.bin')
+    ft.get_dimension()
+    #nh_ft.get_nearest_neighbors('coatl')
+    lang_vectors = torch.from_numpy(ft.get_input_matrix())
+    #print(nah_vectors.size())
+    return lang_vectors
 
 class Lang:
     def __init__(self, name, embedding=None):
@@ -100,9 +98,7 @@ def split_corpus(path):
     return np.split(df.sample(frac=1), [int(.6*len(df)), int(.8*len(df))])
 
 
-def readLangs(lang1, lang2, corpus, reverse=False):
-    print("Reading lines...")
-
+def readLangs(lang1, lang2, corpus, reverse=False,word_embeds=False):
     # lang_df = pd.read_csv("parallel_nh-es.csv", delimiter="|")
     # print(lang_df.head())
     # print(lang_df.columns.to_list())
@@ -110,29 +106,28 @@ def readLangs(lang1, lang2, corpus, reverse=False):
     # Normalizes words
     pairs = [[normalizeString(y) for y in x] for x in pairs]
     # Reverse pairs, make Lang instances
+
     if reverse:
         pairs = [list(reversed(p)) for p in pairs]
-        input_lang = Lang(lang2)
-        output_lang = Lang(lang1)
+        if word_embeds:
+            input_lang = Lang(lang2,embedding=(load_word_embeddings(lang2)))
+            output_lang = Lang(lang1,embedding=load_word_embeddings(lang1))
+        else:
+            input_lang = Lang(lang2)
+            output_lang = Lang(lang1)    
     else:
-        input_lang = Lang(lang1)
-        output_lang = Lang(lang2)
+        if word_embeds:
+            input_lang = Lang(lang1,embedding=load_word_embeddings(lang1))
+            output_lang = Lang(lang2,embedding=load_word_embeddings(lang2))
+        else:
+            input_lang = Lang(lang1)
+            output_lang = Lang(lang2)
 
     return input_lang, output_lang, pairs
 
 
 # May be incresed to get more samples
-MAX_LENGTH = 15
-
-eng_prefixes = (
-    "i am ", "i m ",
-    "he is", "he s ",
-    "she is", "she s ",
-    "you are", "you re ",
-    "we are", "we re ",
-    "they are", "they re "
-)
-
+MAX_LENGTH = 20
 
 def filterPair(p):
     return len(p[0].split(' ')) < MAX_LENGTH and \
@@ -144,26 +139,22 @@ def filterPairs(pairs):
     return [pair for pair in pairs if filterPair(pair)]
 
 
-def prepareData(lang1, lang2, corpus, reverse=False):
-    input_lang, output_lang, pairs = readLangs(lang1, lang2, corpus, reverse)
-    print("Read %s sentence pairs" % len(pairs))
+def prepareData(lang1, lang2, corpus, reverse=False,quiet=True,word_embeds=False):
+    input_lang, output_lang, pairs = readLangs(lang1, lang2, corpus, reverse,word_embeds=word_embeds)
+    og_length = len(pairs)
     pairs = filterPairs(pairs)
-    print("Trimmed to %s sentence pairs" % len(pairs))
-    print("Counting words...")
     for pair in pairs:
         input_lang.addSentence(pair[0])
         output_lang.addSentence(pair[1])
-    print("Counted words:")
-    print(input_lang.name, input_lang.n_words)
-    print(output_lang.name, output_lang.n_words)
+    if not quiet:
+        print("Read %s sentence pairs" % og_length)
+        print("Trimmed to %s sentence pairs" % len(pairs))
+        print("Counting words...")
+        print("Counted words:")
+        print(input_lang.name, input_lang.n_words)
+        print(output_lang.name, output_lang.n_words)
     return input_lang, output_lang, pairs
 
-
-training, validation, test = split_corpus("../corpus/parallel_nh-es.csv")
-input_lang, output_lang, pairs = prepareData('nh', 'es', training)
-print(random.choice(pairs))
-
-"""Set up the encoder and decoder RNN models!"""
 
 
 class EncoderRNN(nn.Module):
@@ -337,10 +328,6 @@ def evaluate_bleu(encoder, decoder, pairs, n=10):
     print('BLEU score:', score)
     return score
 
-
-_, _, val_pairs = prepareData('nh', 'es', validation, True)
-
-
 """
 Model training code
 """
@@ -431,14 +418,16 @@ def timeSince(since, percent):
     return '%s (- %s)' % (asMinutes(s), asMinutes(rs))
 
 
-def showPlot(points):
+def showPlot(points,name):
     plt.figure()
     fig, ax = plt.subplots()
-    # this locator puts ticks at regular intervals
-    loc = ticker.MultipleLocator(base=0.2)
+    # this locator puts ticks at regular 
+    tick_int = max(points)/10
+    loc = ticker.MultipleLocator(base=tick_int)
     ax.yaxis.set_major_locator(loc)
     plt.plot(points)
-    plt.show()
+    ax.set_title(name +" over time")
+    plt.savefig(name)
 
 
 def trainIters(encoder, decoder, n_iters, print_every=1000, plot_every=1000, learning_rate=0.01, attn=False):
@@ -479,36 +468,11 @@ def trainIters(encoder, decoder, n_iters, print_every=1000, plot_every=1000, lea
             plot_losses.append(plot_loss_avg)
             plot_loss_total = 0
 
-    # showPlot(plot_losses)
-    showPlot(bleu_plot)
+    showPlot(plot_losses,"Loss")
+    showPlot(bleu_plot,"BLEU")
     print("Best Bleu Score:", max(bleu_plot))
 
 
-"""Finally, we can actually run and test the model (without attention)!"""
-# TODO test this once everything else works
-hidden_size = 300
-encoder1 = EncoderRNN(input_lang.n_words, hidden_size,
-                      word_embeds=input_lang.embedding).to(device)
-encoder2 = EncoderRNN(input_lang.n_words, hidden_size,
-                      word_embeds=input_lang.embedding).to(device)
-# TODO: try DecoderRNN without attention (remove dropout_p parameter)
-decoder1 = DecoderRNN(hidden_size, output_lang.n_words).to(device)
-attn_decoder1 = AttnDecoderRNN(
-    hidden_size, output_lang.n_words, dropout_p=0.1).to(device)
-
-# TO speed up training, you can reduce 75000 to 5000
-# trainIters(encoder1, decoder1, 50, print_every=5000)
-trainIters(encoder2, attn_decoder1, 1000, learning_rate=0.01,
-           print_every=50, plot_every=100, attn=True)
-
-_, _, test_pairs = prepareData('nh', 'es', test, True)
-
-evaluateRandomly(encoder2, attn_decoder1, test_pairs)
-# evaluate_bleu(encoder1, decoder1, val_pairs, n=len(val_pairs))
-evaluate_bleu(encoder2, attn_decoder1, test_pairs, n=len(test_pairs))
-
-# evaluate_bleu(encoder1,attn_decoder1,val_pairs,n=len(val_pairs))
-# evaluate_bleu(encoder2,decoder1,val_pairs,n=len(val_pairs))
 
 
 def save_translator(encoder, decoder, path1="encoder", path2="decoder"):
@@ -523,6 +487,85 @@ def load_translator(encoder_path, decoder_path):
 def evaluate_saved(encoder_path, decoder_path, pairs):
     evaluate_bleu(*load_translator(encoder_path, decoder_path), pairs)
 
-# save_translator(encoder1,attn_decoder1)
-# save_translator(encoder1,attn_decoder1,path1="/content/drive/MyDrive/NLP_project/encoder1",path2="/content/drive/MyDrive/NLP_project/decoder1")
-# evaluate_saved("encoder","decoder",val_pairs)
+
+
+def main(argv):
+    encoder_path = ''
+    decoder_path = ''
+    test_sentence = ''
+    attention = False
+    build_model = False
+    translate = False
+    iterations =100
+    doc_gap = 20
+    try: 
+        opts, args = getopt.getopt(argv,"habts:e:d:i:p:",["sentence=","encoder=","decoder=","iters=","printevery="])
+    except getopt.GetoptError:
+        print ('nh-es_translator.py -t -e <encoderfile> -d <decoderfile> -s <sentence>')
+        sys.exit(2)
+
+    for opt, arg in opts:
+        if opt == '-h':
+            print ('nh-es_translator.py -e <encoderfile> -d <decoderfile> -s <sentence>')
+            sys.exit()
+        elif opt == "-t":
+            translate= True
+        elif opt == "-b":
+            build_model = True
+        elif opt =="-a":
+            attention= True
+        elif opt in ("-s","--sentence"):
+            test_sentence= arg
+        elif opt in ("-e","--encoder"):
+            encoder_path = arg
+        elif opt in ("-d","--decoder"):
+            decoder_path = arg
+        elif opt in ("-i","--iters"):
+            try:
+                iterations= int(arg)
+            except:
+                print("iterations must be integers")
+                sys.exit()    
+        elif opt in ("-p","--printevery"):
+            try:
+                doc_gap= int(arg)
+            except:
+                print("printevery must be an integer less than iterations")
+                sys.exit()
+    # training, validation, test = split_corpus("../corpus/parallel_nh-es.csv")
+    # input_lang, output_lang, pairs = prepareData('nh', 'es', training)
+    if build_model==translate:
+        print(build_model,translate)
+        print ('nh-es_translator.py -e <encoderfile> -d <decoderfile> -s <sentence>')
+        sys.exit(2)
+    elif translate:  
+        try:
+            translation,_= evaluate(*load_translator(encoder_path,decoder_path),test_sentence)
+            print(test_sentence + " translates to: " +' '.join(translation)+"\n")
+        except:
+            print(encoder_path,decoder_path)
+            print ('nh-es_translator.py -e <encoderfile> -d <decoderfile> -s <sentence>')
+            sys.exit(2)
+    else:
+        hidden_size = 300
+        encoder = EncoderRNN(input_lang.n_words, hidden_size,
+                        word_embeds=input_lang.embedding)
+        decoder =  AttnDecoderRNN(hidden_size, output_lang.n_words, dropout_p=0.1).to(device) if attention else DecoderRNN(hidden_size, output_lang.n_words).to(device)  
+        
+        trainIters(encoder, decoder, iterations, learning_rate=0.01,
+            print_every=doc_gap*2, plot_every=doc_gap, attn=attention)
+        evaluateRandomly(encoder, decoder, test_pairs)
+        evaluate_bleu(encoder, decoder, test_pairs, n=len(test_pairs))
+
+        if encoder_path!='' and decoder_path!='':
+            save_translator(encoder,decoder,path1=encoder_path,path2=decoder_path)
+
+if __name__ == "__main__":
+    plt.switch_backend('agg') 
+    device = "cpu"
+    training, validation, test = split_corpus("../corpus/parallel_nh-es.csv")
+    input_lang, output_lang, pairs = prepareData('nh', 'es', training,reverse=True,word_embeds=True)
+    _, _, val_pairs = prepareData('nah', 'es', validation, True)
+    _, _, test_pairs = prepareData('nah', 'es', test, True)
+
+    main(sys.argv[1:])
