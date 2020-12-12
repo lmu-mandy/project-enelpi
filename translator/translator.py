@@ -596,7 +596,7 @@ def main(argv):
     else:
         hidden_size = 300
         encoder = EncoderRNN(input_lang.n_words, hidden_size,
-                        word_embeds=input_lang.embedding)
+                        word_embeds=input_lang.embedding).to(device)
         decoder =  AttnDecoderRNN(hidden_size, output_lang.n_words, dropout_p=0.1).to(device) if attention else DecoderRNN(hidden_size, output_lang.n_words).to(device)  
         trainIters(encoder, decoder, iterations, learning_rate=0.01,
             print_every=doc_gap*2, plot_every=doc_gap, attn=attention)
@@ -608,7 +608,8 @@ def main(argv):
 
 if __name__ == "__main__":
     plt.switch_backend('agg') 
-    # device = "cpu"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #device = "cpu"
     training, validation, test = split_corpus("../corpus/parallel_nh-es.csv")
     input_lang, output_lang, pairs = prepareData('nah', 'es', training,reverse=True,word_embeds=True)
     _, _, val_pairs = prepareData('nah', 'es', validation, True)
