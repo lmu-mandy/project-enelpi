@@ -2,6 +2,8 @@
 Luis Garcia
 A Nahuatl to Spanish NMT implemented by Luis Garcia as a final project for CMSI 537.
 # How To Use
+I have included a requirements.txt file to easily download the program's requirements using    this command `pip3 install -r requirements.txt`. Once the requirements are installed, One can use the program with a command line interface specified next.
+
 The following is a description on the implemented command line interface: 
 - -h-> Help: Prints sample command format
 - -b-> Build: Sets the mode to build a translation model
